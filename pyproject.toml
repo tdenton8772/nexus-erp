@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "nexus-erp"
@@ -32,7 +32,6 @@ dependencies = [
     # Task queue
     "celery>=5.4.0",
     "celery[redis]>=5.4.0",
-    "redbeat>=2.2.0",
     "apscheduler>=3.10.0",
 
     # Agentic / LLM

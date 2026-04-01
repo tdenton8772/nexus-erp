@@ -4,7 +4,7 @@ defmodule NexusUi.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      NexusUiWeb.Telemetry,
+
       {Phoenix.PubSub, name: NexusUi.PubSub},
       NexusUiWeb.Endpoint
     ]

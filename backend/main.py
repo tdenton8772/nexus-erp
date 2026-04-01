@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
     logger.info("Nexus ERP starting up…")
 
     # Auto-create tables in development (Alembic handles production)
-    if settings.env == "development":
+    if settings.app_env == "development":
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("DB tables ensured.")
@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
 
     # Start Kafka producer
     global _producer
-    _producer = NexusProducer(bootstrap_servers=settings.kafka_bootstrap_servers)
+    _producer = NexusProducer()
     try:
         await _producer.start()
         logger.info("Kafka producer started.")

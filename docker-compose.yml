@@ -117,98 +117,6 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
       KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
 
-  # ── NAM — Neural Addressed Memory (query service) ─────────────────────────
-  # Mounts local source from ~/Development/nam-0.0.1
-  nam-query:
-    build:
-      context: ${NAM_SRC:-../nam-0.0.1}
-      dockerfile: docker/Dockerfile.query
-    container_name: nexus-nam-query
-    ports:
-      - "8010:8000"
-    environment:
-      SERVICE_PORT: "8000"
-      SERVICE_HOST: "0.0.0.0"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 20s
-      retries: 3
-    restart: unless-stopped
-
-  # ── NAM — Encoder HTTP service (geometric address computation) ─────────────
-  nam-encoder:
-    build:
-      context: ${NAM_SRC:-../nam-0.0.1}
-      dockerfile: docker/Dockerfile.encoder-http
-    container_name: nexus-nam-encoder
-    ports:
-      - "8011:8010"
-    environment:
-      SERVICE_PORT: "8010"
-      SERVICE_HOST: "0.0.0.0"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    restart: unless-stopped
-
-  # ── NNLM — Encoder service (multi-agent retrieval pipeline) ───────────────
-  # Mounts local source from ~/Development/nnlm
-  nnlm-encoder:
-    build:
-      context: ${NNLM_SRC:-../nnlm}
-      dockerfile: docker/Dockerfile.encoder
-    container_name: nexus-nnlm-encoder
-    ports:
-      - "8001:8001"
-    environment:
-      NAM_ENCODER_URL: http://nam-encoder:8010
-      NAM_QUERY_URL: http://nam-query:8000
-      NAM_QUERY_USERNAME: ${NAM_QUERY_USERNAME:-admin}
-      NAM_QUERY_PASSWORD: ${NAM_QUERY_PASSWORD:-password}
-      NAM_KV_HOST: ${NAM_KV_HOST:-}
-      NAM_KV_PORT: ${NAM_KV_PORT:-11210}
-      SUPERVISOR_CHECKPOINT: /app/checkpoints/supervisor/best_model.pt
-      QUALITY_CHECKPOINT: /app/checkpoints/quality/best_model.pt
-    depends_on:
-      nam-query:
-        condition: service_healthy
-      nam-encoder:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    restart: unless-stopped
-
-  # ── NNLM — Decoder service (grounded synthesis with citations) ─────────────
-  nnlm-decoder:
-    build:
-      context: ${NNLM_SRC:-../nnlm}
-      dockerfile: docker/Dockerfile.decoder
-    container_name: nexus-nnlm-decoder
-    ports:
-      - "8002:8002"
-    environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      DECODER_CHECKPOINT: /app/model
-      DECODER_MODEL: ${DECODER_MODEL:-gpt-4o-mini}
-    volumes:
-      - nnlm_decoder_model:/app/model
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 30s
-      retries: 3
-    restart: unless-stopped
-
   # ── Python FastAPI backend ─────────────────────────────────────────────────
   api:
     build:
@@ -226,22 +134,17 @@ services:
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
-      NAM_QUERY_URL: http://nam-query:8000
-      NAM_ENCODER_URL: http://nam-encoder:8010
-      NNLM_ENCODER_URL: http://nnlm-encoder:8001
-      NNLM_DECODER_URL: http://nnlm-decoder:8002
+      # NAM + NNLM run in the existing k8s cluster — reach them via NodePorts on the host
+      NAM_QUERY_URL: http://host.docker.internal:30800
+      NAM_ENCODER_URL: http://host.docker.internal:30800
+      NNLM_ENCODER_URL: http://host.docker.internal:30001
+      NNLM_DECODER_URL: http://host.docker.internal:30002
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       kafka:
-        condition: service_healthy
-      nam-query:
-        condition: service_healthy
-      nnlm-encoder:
-        condition: service_healthy
-      nnlm-decoder:
         condition: service_healthy
     volumes:
       - ./backend:/app/backend
@@ -264,20 +167,14 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
-      NAM_QUERY_URL: http://nam-query:8000
-      NAM_ENCODER_URL: http://nam-encoder:8010
-      NNLM_ENCODER_URL: http://nnlm-encoder:8001
-      NNLM_DECODER_URL: http://nnlm-decoder:8002
+      NAM_QUERY_URL: http://host.docker.internal:30800
+      NAM_ENCODER_URL: http://host.docker.internal:30800
+      NNLM_ENCODER_URL: http://host.docker.internal:30001
+      NNLM_DECODER_URL: http://host.docker.internal:30002
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      nam-query:
-        condition: service_healthy
-      nnlm-encoder:
-        condition: service_healthy
-      nnlm-decoder:
         condition: service_healthy
     restart: unless-stopped
 
@@ -292,8 +189,8 @@ services:
     environment:
       MIX_ENV: prod
       PORT: "4000"
-      SECRET_KEY_BASE: "dev-secret-key-base-at-least-64-bytes-change-me-please-ok"
-      GUARDIAN_SECRET: "dev-guardian-secret"
+      SECRET_KEY_BASE: "004fb5cd1b99af5a5c37374564081298340abea08a8549aca24d7e71a4dc98a48d70f9c9b0dd38148ee84df6c1a6397150948120eff7cefb0042efb64a29c3e1"
+      GUARDIAN_SECRET: "nexus-guardian-dev-secret-change-in-production-use-64-chars-min"
       NEXUS_API_URL: http://api:8000
     depends_on:
       - api
@@ -304,7 +201,6 @@ volumes:
   redis_data:
   kafka_data:
   zookeeper_data:
-  nnlm_decoder_model:   # Persists ONNX model checkpoint across restarts
 
 networks:
   default:

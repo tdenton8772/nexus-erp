@@ -9,7 +9,9 @@ WORKDIR /app
 RUN mix local.hex --force && mix local.rebar --force
 
 # Copy mix files and install deps
-COPY mix.exs mix.lock ./
+# mix.lock is optional — it will be generated on first deps.get
+COPY mix.exs ./
+COPY mix.lock* ./
 RUN MIX_ENV=prod mix deps.get --only prod
 
 # Copy config

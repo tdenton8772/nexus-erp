@@ -50,8 +50,8 @@ defmodule NexusUiWeb do
 
   defp html_helpers do
     quote do
-      use Phoenix.HTML
-      import Phoenix.LiveView.Helpers
+      import Phoenix.HTML
+      import Phoenix.HTML.Form
       import NexusUiWeb.CoreComponents
       alias Phoenix.LiveView.JS
     end
