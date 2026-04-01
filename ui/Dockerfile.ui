@@ -17,13 +17,14 @@ RUN MIX_ENV=prod mix deps.get --only prod
 # Copy config
 COPY config/ config/
 
-# Copy assets and compile them
+# Copy lib and priv BEFORE assets.deploy so Tailwind can scan templates
+COPY lib/ lib/
+COPY priv/ priv/
+
+# Copy assets and compile them (Tailwind now scans lib/**/*.heex)
 COPY assets/ assets/
 RUN MIX_ENV=prod mix assets.deploy
 
-# Copy lib and compile
-COPY lib/ lib/
-COPY priv/ priv/
 RUN MIX_ENV=prod mix compile
 
 # Build release

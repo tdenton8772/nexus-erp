@@ -189,6 +189,7 @@ services:
     environment:
       MIX_ENV: prod
       PORT: "4000"
+      PHX_HOST: "100.113.70.93"
       SECRET_KEY_BASE: "004fb5cd1b99af5a5c37374564081298340abea08a8549aca24d7e71a4dc98a48d70f9c9b0dd38148ee84df6c1a6397150948120eff7cefb0042efb64a29c3e1"
       GUARDIAN_SECRET: "nexus-guardian-dev-secret-change-in-production-use-64-chars-min"
       NEXUS_API_URL: http://api:8000

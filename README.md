@@ -1,6 +1,36 @@
 # Nexus ERP
 
-Pluggable, bidirectional ERP integration platform with an AI-driven transformation layer. Connect Sage Intacct to Dynamics 365, SAP S/4HANA, NetSuite, Oracle ERP Cloud — or any custom ERP — without rebuilding the core.
+Pluggable, bidirectional ERP integration platform with an AI-driven transformation layer. Connect Sage Intacct, Dynamics 365, SAP S/4HANA, NetSuite, Oracle ERP Cloud — or any custom ERP — without rebuilding the core.
+
+---
+
+## Screenshots
+
+### Dashboard
+![Dashboard](docs/screenshots/dashboard.png)
+
+### Pipelines
+![Pipelines](docs/screenshots/pipelines.png)
+
+### New Pipeline
+![New Pipeline](docs/screenshots/pipeline-new.png)
+
+### Connectors
+![Connectors](docs/screenshots/connectors.png)
+
+### Add Connector
+![Add Connector](docs/screenshots/connector-new.png)
+
+### Schema Registry
+![Schema Registry](docs/screenshots/schema-registry.png)
+
+### Agent Proposals
+![Agent Proposals](docs/screenshots/agent-proposals.png)
+
+### Monitoring
+![Monitoring](docs/screenshots/monitoring.png)
+
+---
 
 ## Architecture
 
@@ -18,7 +48,7 @@ Pluggable, bidirectional ERP integration platform with an AI-driven transformati
     │              │               │               │
 ┌───▼───┐    ┌─────▼────┐   ┌─────▼────┐   ┌─────▼────┐
 │Celery │    │  Kafka   │   │  NAM     │   │  NNLM    │
-│Worker │    │+ Debezium│   │Query+Enc │   │Enc+Dec   │
+│Worker │    │+ Zookeeper│  │port 30800│   │30001/2   │
 └───┬───┘    └──────────┘   └──────────┘   └──────────┘
     │
 ┌───▼──────────────────────────────────────────────────────────┐
@@ -30,10 +60,10 @@ Pluggable, bidirectional ERP integration platform with an AI-driven transformati
 
 **Stack:**
 - **Backend**: Python 3.11, FastAPI, SQLAlchemy (async), Celery, APScheduler
-- **Frontend**: Elixir/Phoenix LiveView, Tailwind CSS
-- **Messaging**: Apache Kafka, Debezium CDC
+- **Frontend**: Elixir 1.16, Phoenix LiveView 0.20, Tailwind CSS 3
+- **Messaging**: Apache Kafka, Zookeeper
 - **AI layer**: LangGraph, Anthropic Claude, NAM (Neural Addressed Memory), NNLM
-- **Storage**: PostgreSQL, Redis
+- **Storage**: PostgreSQL 15, Redis 7
 - **Infrastructure**: Docker Compose, Alembic migrations
 
 ---
@@ -54,8 +84,8 @@ plugins/           # drop third-party connectors here
 ```
 
 ### Bidirectional Sync
-- **Direction**: forward (source → target), reverse (target → source), or both
-- **Conflict resolution**: last-write-wins by `updated_at` timestamp; Sage Intacct is the tie-breaker hub
+- **Direction**: source → target, target → source, or both
+- **Conflict resolution**: last-write-wins by `updated_at`; Sage Intacct is the tie-breaker hub
 - **Loop prevention**: `ExternalIdMap` table tracks source↔target record IDs and payload hashes — unchanged records are skipped, already-synced records are never re-synced in the opposite direction
 
 ### Schema Registry
@@ -68,13 +98,13 @@ Every connector's entity schemas are versioned. On each discovery run, a SHA-256
 4. **Human-in-the-loop** — LangGraph pauses at `human_checkpoint`; proposals are reviewed via the Phoenix UI before any code is applied
 
 ### NAM + NNLM Integration
-[NAM (Neural Addressed Memory)](../nam-0.0.1) stores schema definitions, approved mappings, and sync events as semantically addressed records using multi-head encoding (ontology, entity, attribute, affordance, context).
+NAM and NNLM run as external services (Kubernetes NodePort) and are **integrated**, not deployed by this stack.
 
-[NNLM](../nnlm) sits on top of NAM and provides:
-- **Encoder** (port 8001): multi-agent retrieval pipeline — supervisor → entity resolver → NAM query → quality gate
-- **Decoder** (port 8002): grounded synthesis with citation tracking — LLM outputs are constrained to indexed facts, preventing hallucination
+- **NAM** (`port 30800`): Neural Addressed Memory — stores schema definitions, approved mappings, and sync events as semantically addressed records
+- **NNLM encoder** (`port 30001`): multi-agent retrieval pipeline — supervisor → entity resolver → NAM query → quality gate
+- **NNLM decoder** (`port 30002`): grounded synthesis with citation tracking — LLM outputs are constrained to indexed facts, preventing hallucination
 
-All agent nodes query NNLM *before* calling Claude, so every mapping proposal and healing suggestion is grounded in real schema data.
+Docker containers reach these services via `host.docker.internal`.
 
 ---
 
@@ -82,7 +112,8 @@ All agent nodes query NNLM *before* calling Claude, so every mapping proposal an
 
 ### Prerequisites
 - Docker + Docker Compose
-- The `nam-0.0.1` and `nnlm` packages at `../nam-0.0.1` and `../nnlm` relative to this directory (i.e. `~/Development/`)
+- NAM running on host port `30800` (NodePort)
+- NNLM encoder on host port `30001`, decoder on `30002`
 - An Anthropic API key
 
 ### 1. Configure environment
@@ -94,38 +125,42 @@ cp .env.example .env
 Edit `.env` and set at minimum:
 ```
 ANTHROPIC_API_KEY=sk-ant-...
-FERNET_KEY=<generate with command in .env.example comment>
+FERNET_KEY=<generate: python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
 ```
 
 ### 2. Start the stack
 
 ```bash
-make up
+docker compose up --build
 ```
 
-This builds and starts all services: Postgres, Redis, Kafka, Debezium, NAM, NNLM, FastAPI, Celery, Phoenix UI.
+This starts: PostgreSQL, Redis, Kafka, Zookeeper, FastAPI API, Celery worker, Phoenix UI.
 
-First startup takes several minutes while Docker builds the NAM and NNLM images.
+NAM and NNLM are **not started** by this compose file — they must already be running.
 
-### 3. Run migrations
+### 3. Run database migrations
 
 ```bash
-make migrate
+docker compose exec api alembic upgrade head
 ```
+
+Or in development mode (non-Docker), set `APP_ENV=development` and tables are auto-created at startup.
 
 ### 4. Open the UI
 
-[http://localhost:4000](http://localhost:4000)
+- **UI**: [http://localhost:4000](http://localhost:4000)
+- **API docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Readiness check**: [http://localhost:8000/health/ready](http://localhost:8000/health/ready)
 
 ---
 
 ## Development
 
-### Local backend (no Docker for Python services)
+### Local backend (without Docker for Python services)
 
 ```bash
-# Start infrastructure only
-make dev
+# Start infrastructure only (postgres, redis, kafka)
+docker compose up postgres redis kafka zookeeper -d
 
 # Run migrations
 alembic upgrade head
@@ -137,7 +172,7 @@ uvicorn backend.main:app --reload
 celery -A backend.workers.celery_app worker --loglevel=info -Q sync,agent
 ```
 
-### Local frontend
+### Local Phoenix frontend
 
 ```bash
 cd ui
@@ -145,15 +180,7 @@ mix deps.get
 mix phx.server
 ```
 
-### Available make targets
-
-```
-make up        # docker compose up --build (full stack)
-make down      # docker compose down
-make dev       # start infrastructure only (postgres, redis, kafka)
-make migrate   # run alembic migrations
-make logs      # follow all service logs
-```
+The local dev server uses `check_origin: false` so it works from any host.
 
 ---
 
@@ -180,7 +207,9 @@ class YourERPConnector(ERPConnector):
     async def subscribe_to_changes(self, entity_name): ...
 ```
 
-3. Restart the API — the registry auto-discovers it.
+3. Restart the API — the connector registry auto-discovers it at startup.
+
+> **Note**: Connectors are registered as classes at startup. Credentials are only used when a `Connector` row exists in the database and a pipeline references it. Starting the system without any ERP credentials configured is safe — nothing will crash.
 
 ---
 
@@ -190,15 +219,34 @@ Base URL: `http://localhost:8000/api/v1`
 
 | Resource | Endpoints |
 |---|---|
-| Connectors | `GET/POST /connectors`, `GET/PUT/DELETE /connectors/{id}`, `POST /connectors/{id}/test` |
-| Pipelines | `GET/POST /pipelines`, `GET/PUT/DELETE /pipelines/{id}`, `POST /pipelines/{id}/start`, `POST /pipelines/{id}/run` |
-| Schemas | `GET /schemas/{connector_id}`, `POST /schemas/{connector_id}/discover` |
-| Mappings | `GET/PUT /pipelines/{id}/mappings`, `GET /pipelines/{id}/transformation`, `POST /pipelines/{id}/transformation/test` |
-| Agent | `POST /agent/pipelines/{id}/trigger`, `GET /agent/proposals`, `POST /agent/proposals/{id}/review` |
-| Sync Events | `GET /sync-events`, `GET /sync-events/stats/summary` |
-| Health | `GET /health`, `GET /health/ready` |
+| Connectors | `GET/POST /connectors` · `GET/PUT/DELETE /connectors/{id}` · `POST /connectors/{id}/test` · `GET /connectors/types` |
+| Pipelines | `GET/POST /pipelines` · `GET/PUT/DELETE /pipelines/{id}` · `POST /pipelines/{id}/start` · `POST /pipelines/{id}/pause` · `POST /pipelines/{id}/run` |
+| Schemas | `GET /schemas/{connector_id}` · `GET /schemas/{connector_id}/{entity}` · `POST /schemas/{connector_id}/discover` · `GET /schemas/{connector_id}/{entity}/diffs` |
+| Mappings | `GET/POST /pipelines/{id}/mappings` · `DELETE /pipelines/{id}/mappings/{mapping_id}` |
+| Transformation | `GET/PUT /pipelines/{id}/transformation` · `POST /pipelines/{id}/transformation/test` · `POST /pipelines/{id}/transformation/regenerate` |
+| Agent | `POST /agent/pipelines/{id}/trigger` · `POST /agent/pipelines/{id}/heal` · `GET /agent/proposals` · `GET /agent/proposals/{id}` · `POST /agent/proposals/{id}/review` |
+| Sync Events | `GET /sync-events` · `GET /sync-events/stats/summary` |
+| Health | `GET /health` · `GET /health/ready` |
 
 Interactive docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+---
+
+## UI Pages
+
+| Page | Route | Description |
+|---|---|---|
+| Dashboard | `/` | Overview: pipeline counts, status, recent sync events |
+| Connectors | `/connectors` | Manage ERP connections, test connectivity, trigger schema discovery |
+| Pipelines | `/pipelines` | Create, start, pause, delete pipelines |
+| Pipeline Detail | `/pipelines/:id` | Status, config, recent sync event log for one pipeline |
+| Mapping Editor | `/pipelines/:id/mappings` | Drag-and-drop field mapping with agent auto-map |
+| Transformation | `/pipelines/:id/transformation` | View/edit compiled Python transform functions |
+| Schema Registry | `/schemas` | Browse discovered schemas by connector and entity |
+| Schema Diff | `/schemas/:connector_id/:entity` | Field-level schema change history |
+| Agent Proposals | `/agent/proposals` | Review and approve/reject AI-generated mapping proposals |
+| Monitoring | `/monitoring` | Live event log across all pipelines with filters |
+| Pipeline Monitor | `/monitoring/:pipeline_id` | Per-pipeline real-time event stream |
 
 ---
 
@@ -213,13 +261,19 @@ nexus-erp/
 │   ├── core/               # Config, DB, security, logging
 │   ├── db/                 # SQLAlchemy ORM models
 │   ├── llm/                # NAM + NNLM clients, schema indexer
-│   ├── messaging/          # Kafka producer/consumer
+│   ├── messaging/          # Kafka producer
 │   ├── pipeline/           # Runner, conflict resolver, poller
 │   ├── schema_registry/    # Schema versioning + drift detection
 │   ├── transformation/     # Mapping compiler + RestrictedPython sandbox
 │   └── workers/            # Celery tasks (sync + agent)
 ├── ui/                     # Elixir Phoenix LiveView application
+│   ├── lib/nexus_ui_web/
+│   │   ├── live/           # LiveView modules (one per page)
+│   │   ├── components/     # Shared components (modal, flash, fields)
+│   │   └── router.ex       # Route definitions
+│   └── assets/             # Tailwind CSS + esbuild JS
 ├── alembic/                # Database migrations
+├── docs/screenshots/       # UI screenshots
 ├── plugins/                # Drop custom connectors here
 ├── docker-compose.yml
 ├── Dockerfile.api
