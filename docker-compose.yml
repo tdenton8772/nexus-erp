@@ -1,0 +1,311 @@
+services:
+
+  # ── Postgres (metadata store) ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexus-postgres
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus_dev_password
+      POSTGRES_DB: nexus_erp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus_erp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (Celery broker + caching) ───────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: nexus-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Zookeeper ──────────────────────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: nexus-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+
+  # ── Kafka ──────────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: nexus-kafka
+    depends_on: [zookeeper]
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 72
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── Kafka Schema Registry ──────────────────────────────────────────────────
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.0
+    container_name: nexus-schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+
+  # ── Kafka Connect (Debezium CDC) ───────────────────────────────────────────
+  kafka-connect:
+    image: debezium/connect:2.6
+    container_name: nexus-kafka-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: nexus-connect-group
+      CONFIG_STORAGE_TOPIC: nexus.connect.configs
+      OFFSET_STORAGE_TOPIC: nexus.connect.offsets
+      STATUS_STORAGE_TOPIC: nexus.connect.status
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+
+  # ── Kafka UI ───────────────────────────────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: nexus-kafka-ui
+    depends_on: [kafka]
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+
+  # ── NAM — Neural Addressed Memory (query service) ─────────────────────────
+  # Mounts local source from ~/Development/nam-0.0.1
+  nam-query:
+    build:
+      context: ${NAM_SRC:-../nam-0.0.1}
+      dockerfile: docker/Dockerfile.query
+    container_name: nexus-nam-query
+    ports:
+      - "8010:8000"
+    environment:
+      SERVICE_PORT: "8000"
+      SERVICE_HOST: "0.0.0.0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+
+  # ── NAM — Encoder HTTP service (geometric address computation) ─────────────
+  nam-encoder:
+    build:
+      context: ${NAM_SRC:-../nam-0.0.1}
+      dockerfile: docker/Dockerfile.encoder-http
+    container_name: nexus-nam-encoder
+    ports:
+      - "8011:8010"
+    environment:
+      SERVICE_PORT: "8010"
+      SERVICE_HOST: "0.0.0.0"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8010/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  # ── NNLM — Encoder service (multi-agent retrieval pipeline) ───────────────
+  # Mounts local source from ~/Development/nnlm
+  nnlm-encoder:
+    build:
+      context: ${NNLM_SRC:-../nnlm}
+      dockerfile: docker/Dockerfile.encoder
+    container_name: nexus-nnlm-encoder
+    ports:
+      - "8001:8001"
+    environment:
+      NAM_ENCODER_URL: http://nam-encoder:8010
+      NAM_QUERY_URL: http://nam-query:8000
+      NAM_QUERY_USERNAME: ${NAM_QUERY_USERNAME:-admin}
+      NAM_QUERY_PASSWORD: ${NAM_QUERY_PASSWORD:-password}
+      NAM_KV_HOST: ${NAM_KV_HOST:-}
+      NAM_KV_PORT: ${NAM_KV_PORT:-11210}
+      SUPERVISOR_CHECKPOINT: /app/checkpoints/supervisor/best_model.pt
+      QUALITY_CHECKPOINT: /app/checkpoints/quality/best_model.pt
+    depends_on:
+      nam-query:
+        condition: service_healthy
+      nam-encoder:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  # ── NNLM — Decoder service (grounded synthesis with citations) ─────────────
+  nnlm-decoder:
+    build:
+      context: ${NNLM_SRC:-../nnlm}
+      dockerfile: docker/Dockerfile.decoder
+    container_name: nexus-nnlm-decoder
+    ports:
+      - "8002:8002"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DECODER_CHECKPOINT: /app/model
+      DECODER_MODEL: ${DECODER_MODEL:-gpt-4o-mini}
+    volumes:
+      - nnlm_decoder_model:/app/model
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  # ── Python FastAPI backend ─────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: nexus-api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_CONNECT_URL: http://kafka-connect:8083
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      NAM_QUERY_URL: http://nam-query:8000
+      NAM_ENCODER_URL: http://nam-encoder:8010
+      NNLM_ENCODER_URL: http://nnlm-encoder:8001
+      NNLM_DECODER_URL: http://nnlm-decoder:8002
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      nam-query:
+        condition: service_healthy
+      nnlm-encoder:
+        condition: service_healthy
+      nnlm-decoder:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+      - ./plugins:/app/plugins
+      - ./mappings:/app/mappings
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  # ── Celery worker ──────────────────────────────────────────────────────────
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: nexus-celery-worker
+    command: celery -A backend.workers.celery_app worker --loglevel=info --concurrency=4 -Q sync,agent
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      NAM_QUERY_URL: http://nam-query:8000
+      NAM_ENCODER_URL: http://nam-encoder:8010
+      NNLM_ENCODER_URL: http://nnlm-encoder:8001
+      NNLM_DECODER_URL: http://nnlm-decoder:8002
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nam-query:
+        condition: service_healthy
+      nnlm-encoder:
+        condition: service_healthy
+      nnlm-decoder:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Elixir Phoenix UI ──────────────────────────────────────────────────────
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile.ui
+    container_name: nexus-ui
+    ports:
+      - "4000:4000"
+    environment:
+      MIX_ENV: prod
+      PORT: "4000"
+      SECRET_KEY_BASE: "dev-secret-key-base-at-least-64-bytes-change-me-please-ok"
+      GUARDIAN_SECRET: "dev-guardian-secret"
+      NEXUS_API_URL: http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
+  zookeeper_data:
+  nnlm_decoder_model:   # Persists ONNX model checkpoint across restarts
+
+networks:
+  default:
+    name: nexus-network

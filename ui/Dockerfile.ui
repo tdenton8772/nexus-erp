@@ -1,0 +1,42 @@
+FROM elixir:1.16-alpine AS build
+
+# Install build deps
+RUN apk add --no-cache build-base nodejs npm git
+
+WORKDIR /app
+
+# Install hex + rebar
+RUN mix local.hex --force && mix local.rebar --force
+
+# Copy mix files and install deps
+COPY mix.exs mix.lock ./
+RUN MIX_ENV=prod mix deps.get --only prod
+
+# Copy config
+COPY config/ config/
+
+# Copy assets and compile them
+COPY assets/ assets/
+RUN MIX_ENV=prod mix assets.deploy
+
+# Copy lib and compile
+COPY lib/ lib/
+COPY priv/ priv/
+RUN MIX_ENV=prod mix compile
+
+# Build release
+RUN MIX_ENV=prod mix phx.digest
+RUN MIX_ENV=prod mix release
+
+# ── Runtime image ─────────────────────────────────────────────────────────────
+FROM alpine:3.19 AS runtime
+
+RUN apk add --no-cache libstdc++ openssl ncurses-libs
+
+WORKDIR /app
+
+COPY --from=build /app/_build/prod/rel/nexus_ui ./
+
+EXPOSE 4000
+ENV MIX_ENV=prod
+CMD ["bin/nexus_ui", "start"]

@@ -1,0 +1,41 @@
+<div class="flex h-screen overflow-hidden">
+  <%!-- Sidebar --%>
+  <aside class="w-56 shrink-0 bg-gray-900 text-gray-300 flex flex-col">
+    <div class="px-4 py-5 border-b border-gray-700">
+      <h1 class="text-white font-bold text-lg tracking-tight">Nexus ERP</h1>
+      <p class="text-gray-500 text-xs mt-0.5">Integration Platform</p>
+    </div>
+    <nav class="flex-1 px-2 py-4 space-y-1 overflow-y-auto">
+      <.nav_item href="/" label="Dashboard" icon="⬛" />
+      <.nav_item href="/connectors" label="Connectors" icon="🔌" />
+      <.nav_item href="/pipelines" label="Pipelines" icon="⇄" />
+      <.nav_item href="/schemas" label="Schema Registry" icon="📋" />
+      <div class="pt-3 pb-1">
+        <p class="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Agent</p>
+      </div>
+      <.nav_item href="/agent/proposals" label="Proposals" icon="✦" />
+      <div class="pt-3 pb-1">
+        <p class="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Observability</p>
+      </div>
+      <.nav_item href="/monitoring" label="Monitoring" icon="📊" />
+    </nav>
+    <div class="px-4 py-3 border-t border-gray-700 text-xs text-gray-500">
+      Python API: <span id="api-status" class="text-green-400">●</span>
+    </div>
+  </aside>
+
+  <%!-- Main content --%>
+  <main class="flex-1 overflow-y-auto">
+    <NexusUiWeb.CoreComponents.flash_messages flash={@flash} />
+    <%= @inner_content %>
+  </main>
+</div>
+
+<script>
+  // Simple API health check indicator
+  fetch('/api/health').then(r => {
+    document.getElementById('api-status').className = r.ok ? 'text-green-400' : 'text-red-400';
+  }).catch(() => {
+    document.getElementById('api-status').className = 'text-red-400';
+  });
+</script>
